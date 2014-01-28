@@ -147,7 +147,7 @@ module Profilify
         song_tweet = @client.user_timeline(Config::MUSIC_USERNAME).first
         song_time = Time.parse(song_tweet[:created_at].to_s)
         cur_time = Time.now.utc
-        time_diff = ((song_time - cur_time) / 3600).round
+        time_diff = ((song_time - cur_time) / 3600).round.abs
         song = song_tweet.text.strip.scan(Config::MUSIC_REGEX)[0]
       end
 
