@@ -1,13 +1,10 @@
 #!/usr/bin/env ruby
 # coding: utf-8
 
-require 'em/pure_ruby'
 require 'bishop'
 require 'twitter_ebooks'
 
 require_relative 'config'
-
-OpenSSL::SSL::VERIFY_PEER = OpenSSL::SSL::VERIFY_NONE
 
 def log(*args)
   $stdout.puts args.map(&:to_s).join(' ')
