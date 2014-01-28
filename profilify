@@ -1,0 +1,223 @@
+#!/usr/bin/env ruby
+# coding: utf-8
+
+require 'em/pure_ruby'
+require 'bishop'
+require 'twitter_ebooks'
+
+require_relative 'config'
+
+OpenSSL::SSL::VERIFY_PEER = OpenSSL::SSL::VERIFY_NONE
+
+def log(*args)
+  $stdout.puts args.map(&:to_s).join(' ')
+  $stdout.flush
+end
+
+module Profilify
+  class Updater
+    def initialize
+      Twitter.configure do |config|
+        config.consumer_key = Config::CONSUMER_KEY
+        config.consumer_secret = Config::CONSUMER_SECRET
+        config.oauth_token = Config::OAUTH_TOKEN
+        config.oauth_token_secret = Config::OAUTH_TOKEN_SECRET
+      end
+
+      @client = Twitter::Client.new
+    end
+
+    def sync_archive
+      @archive = Ebooks::Archive.new(
+        Config::USERNAME,
+        Config::PATH_CORPUS,
+        @client
+      )
+
+      @archive.sync
+    end
+
+    def train_emotions
+      @emotions = []
+
+      log "Training emotional classifier against #{ Config::PATH_EMOTIONS }"
+
+      @classifier = Bishop::Bayes.new {
+        |probs, ignore| Bishop::robinson(probs, ignore)
+      }
+
+      File.read(Config::PATH_EMOTIONS).lines do |line|
+        next if line.strip.empty?
+        emotion, text = line.split("\t")
+        @emotions << emotion unless @emotions.include?(emotion)
+        @classifier.train(emotion, text)
+      end
+    end
+
+    def classify(tweets)
+      stats = {}
+      stats[:total] = 0
+
+      @emotions.each do |emotion|
+        stats[emotion] = 0.0
+      end
+
+      tweets.take(Config::AMOUNT).each do |tweet|
+        tweet = Ebooks::NLP.normalize(tweet[:text])
+
+        if Config::IGNORE_REPLIES && tweet.start_with?('@') ||
+           Config::IGNORE_RETWEETS && tweet.start_with?('RT') ||
+           Config::IGNORE_QUOTES && tweet.start_with?('MT') ||
+           Config::IGNORE_QUOTES && tweet.start_with?('QT')
+          next
+        end
+
+        scores = @classifier.guess(tweet).sort do |x, y|
+          y[1] <=> x[1]
+        end
+
+        scores.each do |score|
+          stats[score[0]] += score[1]
+          stats[:total] += score[1]
+        end
+      end
+
+      @emotions.each do |emotion|
+        stats[emotion] = stats[emotion] / stats[:total].to_f
+      end
+
+      stats
+    end
+
+    def calculate_emotion
+      log "Calculating emotional changes..."
+
+      tweets = @archive.tweets
+      overall_stats = classify(tweets)
+
+      recent_tweets = tweets[0..Config::RECENT]
+      recent_stats = classify(recent_tweets)
+
+      if recent_stats[:total] == 0.0
+        log "Unable to classify any of the last #{ recent_tweets.length } tweets."
+        log "You might need more data in emotions.tsv"
+        log "Defaulting to: unknown"
+        return "unknown"
+      end
+
+      pct_change = {}
+
+      @emotions.each do |emotion|
+        difference = recent_stats[emotion] - overall_stats[emotion]
+        pct_change[emotion] = difference / recent_stats[emotion] * 100
+      end
+
+      best = pct_change.sort { |x, y| y[1] <=> x[1] }[0]
+
+      def ml(val)
+        val < 0 ? "less" : "more"
+      end
+
+      log "Relative to #{ Config::AMOUNT } last tweets, " \
+          "in the #{ recent_tweets.length } most recent " \
+          "@#{ Config::USERNAME } is: "
+
+      @emotions.each do |emotion|
+        log "\t#{ pct_change[emotion].abs.round(2) }% " \
+            "#{ ml(pct_change[emotion]) } #{ emotion }"
+      end
+
+      if best[1] < Config::DEVIATION_THRESHOLD * 100
+        log "As no emotion deviates more than the configured " \
+            "DEVIATION_THRESHOLD of #{ Config::DEVIATION_THRESHOLD*100 }%, " \
+            "we're going with: neutral"
+        return "neutral"
+      else
+        log "The dominant emotion appears to be: #{ best[0].to_sym }"
+      end
+
+      best[0].to_sym
+    end
+
+    def update_bio(max_length = 160, length_tolerance = 10)
+      longs = Config::LONG.shuffle
+      next_long = longs.last
+      shorts = Config::SHORT.shuffle.reject { |word| next_long.include?(word) }
+
+      bio = "#{ Config::BIO_STATEMENT.sample } Likes #{ shorts.pop }"
+
+      if Config::UPDATE_MUSIC
+        song_tweet = @client.user_timeline(Config::MUSIC_USERNAME).first
+        song_time = Time.parse(song_tweet[:created_at].to_s)
+        cur_time = Time.now.utc
+        time_diff = ((song_time - cur_time) / 3600).round
+        song = song_tweet.text.strip.scan(Config::MUSIC_REGEX)[0]
+      end
+
+      while bio.length < (max_length - length_tolerance)
+        next_short = shorts.pop
+
+        attempt = "#{ bio }, #{ next_short }, and #{ next_long }."
+
+        if Config::UPDATE_MUSIC && time_diff < Config::MUSIC_MAX_AGE
+          attempt << " Listening to #{ song.first } by #{ song.last }."
+        end
+
+        if Config::UPDATE_EMOTION
+          attempt << " Feeling #{ Config::EMOTIONAL_STATES[@emotion].sample }"
+        end
+
+        if attempt.length > max_length
+          next
+        elsif attempt.length > max_length - length_tolerance
+          bio = attempt
+        else
+          bio << ", #{ next_short }"
+        end
+      end
+
+      log "Updating bio to: #{ bio }"
+
+      @client.update_profile(:description => bio)
+    end
+
+    def update_avatar
+      random_image = Config::AVATARS[@emotion].sample
+
+      image_path = File.join(Config::PATH_ROOT, "images", random_image)
+
+      image = File.open(image_path, "rb")
+      encoded_image = Base64.encode64(image.read)
+      image.close
+
+      log "Updating avatar to: #{ random_image }"
+
+      @client.update_profile_image(encoded_image)
+    end
+
+    def update_kaomoji
+      name = "#{ Config::NAME } #{ Config::KAOMOJI[@emotion].sample }"
+      log "Updating name to: #{ name }"
+      @client.update_profile(:name => name)
+    end
+
+    def run
+      if Config::UPDATE_EMOTION || Config::UPDATE_AVATAR
+        self.sync_archive
+        self.train_emotions
+        @emotion = self.calculate_emotion
+      end
+
+      update_bio if Config::UPDATE_BIO
+      update_avatar if Config::UPDATE_AVATAR
+      update_kaomoji if Config::UPDATE_KAOMOJI
+
+      log "Done!"
+    end
+  end
+end
+
+if __FILE__ == $0
+  updater = Profilify::Updater.new
+  updater.run
+end
