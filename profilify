@@ -199,7 +199,7 @@ module Profilify
     end
 
     def run
-      if Config::UPDATE_EMOTION || Config::UPDATE_AVATAR
+      if Config::UPDATE_EMOTION || Config::UPDATE_AVATAR || Config::UPDATE_KAOMOJI
         self.sync_archive
         self.train_emotions
         @emotion = self.calculate_emotion
