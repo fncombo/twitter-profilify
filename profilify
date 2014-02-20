@@ -139,8 +139,9 @@ module Profilify
     def update_bio(max_length = 160, length_tolerance = 10)
       longs = Config::LONG.shuffle
       next_long = longs.last
-      shorts = Config::SHORT.shuffle.reject { |word| next_long.include?(word) }
-      shorts = Config::SHORT.shuffle.reject { |word| Config::BIO_STATEMENT.include?(word) }
+      shorts = Config::SHORT.shuffle.reject {
+        |word| next_long.include?(word) || Config::BIO_STATEMENT.include?(word)
+      }
 
       bio = "#{ Config::BIO_STATEMENT.sample } Likes #{ shorts.pop }"
 
