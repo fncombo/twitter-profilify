@@ -1,4 +1,4 @@
-#Twitter Profilify
+# Twitter Profilify
 A little script based on [Mispy][mispy_github]'s [bioversity][bioversity] and [kaomojify][kaomojify]. It helps your Twitter profile be a little more random, informative, and interesting.
 
 ## Emotional analyzer
